@@ -10,16 +10,25 @@ import {
   splitProps,
 } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui/solid/macro";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
 import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { Button, Checkbox, Radio2, Text, TextField } from "../design";
+import {
+  Button,
+  Checkbox,
+  FloatingSelect,
+  Radio2,
+  Text,
+  TextField,
+  typography,
+} from "../design";
 import { TextEditor2 } from "../features/texteditor/TextEditor2";
-import { Row } from "../layout";
+import { Column, Row } from "../layout";
 
-import { FileInput } from "./files";
+import { useError } from "@revolt/i18n";
+import { FileInput, humanFileSize } from "./files";
 
 /**
  * Form wrapper for TextField
@@ -37,18 +46,18 @@ const FormTextField = (
         {...remote}
         value={local.control.value}
         oninput={(e) => {
+          if (!e.currentTarget.checkValidity()) {
+            // Rely on the dom and mdui to handle errors with text fields
+            local.control.setErrors({ invalid: true });
+          } else {
+            local.control.setErrors(null);
+          }
           local.control.setValue(e.currentTarget.value);
           local.control.markDirty(true);
         }}
         required={local.control.isRequired}
         disabled={local.control.isDisabled}
       />
-
-      <Show when={local.control.isTouched && !local.control.isValid}>
-        <For each={Object.keys(local.control.errors!)}>
-          {(errorMsg: string) => <small>{errorMsg}</small>}
-        </For>
-      </Show>
     </>
   );
 };
@@ -71,7 +80,7 @@ const FormTextEditor = (
         {...remote}
         onChange={(value) => {
           local.control.setValue(value);
-          local.control.markDirty(true);
+          local.control.markDirty(value !== remote.initialValue?.[0]);
         }}
         // todo: required={local.control.isRequired}
         // todo: disabled={local.control.isDisabled}
@@ -96,27 +105,33 @@ const EditorBox = styled("div", {
 });
 
 /**
- * Form wrapper for TextField.Select
+ * Form wrapper for FloatingSelect
+ *
+ * Note: If control is 'required', an '*' will only appear if the control has a label.
+ * Required will still be enforced, this is just visual.
  */
-FormTextField.Select = (
-  props: {
-    control: IFormControl<string>;
-  } & ComponentProps<typeof TextField.Select>,
-) => {
-  const [local, remote] = splitProps(props, ["control"]);
+export function FormSelect(
+  props: { control: IFormControl<string>; label?: string } & Omit<
+    ComponentProps<typeof FloatingSelect>,
+    "value" | "label" | "required" | "disabled" | "onChange"
+  >,
+) {
+  const [local, others] = splitProps(props, ["control", "children"]);
 
   return (
     <>
-      <TextField.Select
-        {...remote}
+      <FloatingSelect
+        {...others}
         value={local.control.value}
+        required={local.control.isRequired as never}
+        disabled={local.control.isDisabled}
         onChange={(e) => {
-          local.control.setValue(e.currentTarget.value);
+          local.control.setValue(e.currentTarget.value || "");
           local.control.markDirty(true);
         }}
-        required={local.control.isRequired}
-        disabled={local.control.isDisabled}
-      />
+      >
+        {local.children}
+      </FloatingSelect>
 
       <Show when={local.control.isTouched && !local.control.isValid}>
         <For each={Object.keys(local.control.errors!)}>
@@ -125,7 +140,7 @@ FormTextField.Select = (
       </Show>
     </>
   );
-};
+}
 
 /**
  * Form wrapper for, single file, FileInput
@@ -134,12 +149,22 @@ const FormFileInput = (
   props: {
     label?: string;
     control: IFormControl<File[] | string | null>;
+    maxSize?: number;
+    hideErrors?: boolean;
   } & Pick<
     ComponentProps<typeof FileInput>,
     "accept" | "imageAspect" | "imageRounded" | "imageJustify" | "allowRemoval"
   >,
 ) => {
-  const [local, remote] = splitProps(props, ["label", "control"]);
+  const [local, remote] = splitProps(props, [
+    "label",
+    "control",
+    "maxSize",
+    "hideErrors",
+  ]);
+
+  const err = useError();
+  const { t } = useLingui();
 
   return (
     <>
@@ -150,18 +175,51 @@ const FormFileInput = (
         {...remote}
         file={local.control.value}
         onFiles={(files) => {
-          // TODO: do validation of files here
+          if (
+            files &&
+            files.length > 0 &&
+            local.maxSize &&
+            files[0].size > local.maxSize
+          ) {
+            local.control.setErrors({
+              error: new Error(
+                t`File must be smaller than ${humanFileSize(local.maxSize)}`,
+              ),
+            });
+            local.control.markTouched(true);
+            return;
+          }
 
+          local.control.setErrors(null);
           local.control.setValue(files);
           local.control.markDirty(true);
         }}
         required={local.control.isRequired}
         disabled={local.control.isDisabled}
       />
-      <Show when={local.control.isTouched && !local.control.isValid}>
-        <For each={Object.keys(local.control.errors!)}>
-          {(errorMsg: string) => <small>{errorMsg}</small>}
-        </For>
+      <Show when={local.maxSize}>
+        <span class={typography({ class: "label", size: "small" })}>
+          (max. {humanFileSize(local.maxSize!)})
+        </span>
+      </Show>
+      <Show
+        when={
+          !local.hideErrors && local.control.isTouched && !local.control.isValid
+        }
+      >
+        <Column gap="sm">
+          <For each={Object.keys(local.control.errors!)}>
+            {(errorMsg: string) => (
+              <span
+                class={css(typography.raw({ class: "label", size: "small" }), {
+                  color: "var(--md-sys-color-error)",
+                })}
+              >
+                {err(local.control.errors![errorMsg])}
+              </span>
+            )}
+          </For>
+        </Column>
       </Show>
     </>
   );
@@ -455,7 +513,7 @@ function useSubmitHandler(
       control.markTouched(true);
     }
 
-    if (!canSubmit(group)) return;
+    if (!canSubmit(group)) return false;
 
     group.markPending(true);
 
@@ -463,12 +521,14 @@ function useSubmitHandler(
       await handler();
       resetGeneric(group, true);
       onReset?.();
+      return true;
     } catch (err) {
       group.setErrors({
         error: err,
       });
 
       resetGeneric(group, false);
+      return false;
     } finally {
       group.markPending(false);
     }
@@ -478,6 +538,7 @@ function useSubmitHandler(
 export const Form2 = {
   TextField: FormTextField,
   TextEditor: FormTextEditor,
+  Select: FormSelect,
   FileInput: FormFileInput,
   Checkbox: FormCheckbox,
   Radio: FormRadio,
@@ -486,5 +547,9 @@ export const Form2 = {
   Reset: FormResetButton,
   Submit: FormSubmitButton,
   canSubmit,
+  reset: (group: IFormGroup, onReset?: () => void) => {
+    resetGeneric(group, true);
+    onReset?.();
+  },
   useSubmitHandler,
 };

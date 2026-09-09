@@ -1,8 +1,10 @@
-import { createMemo } from "solid-js";
+import { createMemo, Show } from "solid-js";
 import { useMediaDeviceSelect } from "solid-livekit-components";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Trans } from "@lingui/solid/macro";
 
+import { useInstance } from "@revolt/instance";
+import { stoatSinkName } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
@@ -17,12 +19,16 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
  * Input options
  */
 export function VoiceInputOptions() {
+  const { limits } = useInstance();
+
   return (
     <Column>
       <CategoryButton.Group>
         <SelectInput kind="audioinput" />
         <SelectInput kind="audiooutput" />
-        {/* <SelectInput kind="videoinput" /> TODO O.o */}
+        <Show when={limits().video}>
+          <SelectInput kind="videoinput" />
+        </Show>
       </CategoryButton.Group>
       <VolumeSliders />
     </Column>
@@ -37,36 +43,42 @@ function SelectInput(props: { kind: MediaDeviceKind }) {
   const media = createMemo(() => useMediaDeviceSelect({ kind: props.kind }));
 
   const setKey = () =>
-    props.kind === "audioinput"
-      ? "preferredAudioInputDevice"
-      : "preferredAudioOutputDevice";
+    props.kind === "videoinput"
+      ? "preferredVideoDevice"
+      : props.kind === "audioinput"
+        ? "preferredAudioInputDevice"
+        : "preferredAudioOutputDevice";
 
   const icon = () =>
-    props.kind === "audioinput" ? (
+    props.kind === "videoinput" ? (
+      <Symbol>camera_video</Symbol>
+    ) : props.kind === "audioinput" ? (
       <Symbol>mic</Symbol>
     ) : (
       <Symbol>speaker</Symbol>
     );
 
   const title = () =>
-    props.kind === "audioinput" ? (
+    props.kind === "videoinput" ? (
+      <Trans>Select video input</Trans>
+    ) : props.kind === "audioinput" ? (
       <Trans>Select audio input</Trans>
     ) : (
       <Trans>Select audio output</Trans>
     );
 
-  const activeId = createMemo(() => {
-    const active = media().activeDeviceId();
-    return (active === "default" ? state.voice[setKey()] : undefined) ?? active;
-  });
+  const activeId = createMemo(() => state.voice[setKey()] ?? "default");
 
   const devOpts = createMemo(() => {
-    const devs = media().devices(),
-      opts: { [k in string]: CategorySelectOption } = {};
+    const opts: { [k in string]: CategorySelectOption } = {};
+    const devs = media()
+      .devices()
+      // Filter out the virtual sink
+      .filter((dev) => dev.label.split(":").pop() !== stoatSinkName);
 
     //Ensure default is at top
     let d = devs.find((d) => d.deviceId === "default");
-    if (d) opts.default = { title: d.label };
+    opts.default = { title: d?.label ?? "Default" };
 
     for (d of devs)
       if (d.deviceId !== "default") opts[d.deviceId] = { title: d.label };
@@ -80,11 +92,16 @@ function SelectInput(props: { kind: MediaDeviceKind }) {
       value={activeId()}
       options={devOpts()}
       onUpdate={(id) => {
-        const mMedia = media(),
-          dev = mMedia.devices().find((d) => d.deviceId === id);
-        if (dev) {
-          state.voice[setKey()] = dev.deviceId;
-          mMedia.setActiveMediaDevice(dev.deviceId);
+        const mMedia = media();
+        if (
+          id === "default" ||
+          mMedia.devices().find((d) => d.deviceId === id)
+        ) {
+          //Can't setActiveMediaDevice to "default" for video, only audio
+          //But it can be applied on livekit init, so this choice will be remembered
+          if (props.kind !== "videoinput" || id !== "default")
+            mMedia.setActiveMediaDevice(id);
+          state.voice[setKey()] = id === "default" ? undefined : id;
         }
       }}
     />
@@ -99,6 +116,19 @@ function VolumeSliders() {
 
   return (
     <Column>
+      <Text class="label">
+        <Trans>Input Volume</Trans>
+      </Text>
+      <Slider
+        min={0}
+        max={3}
+        step={0.1}
+        value={state.voice.inputVolume}
+        onInput={(event) =>
+          (state.voice.inputVolume = event.currentTarget.value)
+        }
+        labelFormatter={(label) => (label * 100).toFixed(0) + "%"}
+      />
       <Text class="label">
         <Trans>Output Volume</Trans>
       </Text>

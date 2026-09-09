@@ -1,6 +1,6 @@
 import { createSignal, onMount } from "solid-js";
 
-import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui/solid/macro";
 
 import { CategoryButton, Checkbox, Column } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -41,6 +41,7 @@ declare global {
         ) => void,
       ): void;
       screenPickerCallback(idx: number, audio: boolean): void;
+      isWayland?(): boolean;
     };
 
     desktopConfig: {
@@ -87,7 +88,7 @@ export default function Native() {
       set({ hardwareAcceleration: !config().hardwareAcceleration }),
   };
 
-  function CheckboxButton<K extends keyof DesktopConfig>(
+  function CheckboxButton<K extends keyof Omit<DesktopConfig, "windowState">>(
     key: K,
     icon: string,
     label: string,
@@ -95,16 +96,7 @@ export default function Native() {
   ) {
     return (
       <CategoryButton
-        action={
-          <Checkbox
-            checked={config()[key]}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => {
-              e.stopPropagation();
-              toggles[key]!();
-            }}
-          />
-        }
+        action={<Checkbox checked={config()[key]} />}
         onClick={toggles[key]}
         icon={<Symbol>{icon}</Symbol>}
         description={description}
@@ -118,13 +110,7 @@ export default function Native() {
     <Column gap="lg">
       <CategoryButton.Group>
         <CategoryButton
-          action={
-            <Checkbox
-              checked={autostart()}
-              onClick={(e) => e.stopPropagation()}
-              onChange={toggleAutostart}
-            />
-          }
+          action={<Checkbox checked={autostart()} />}
           onClick={toggleAutostart}
           icon={<Symbol>exit_to_app</Symbol>}
           description={

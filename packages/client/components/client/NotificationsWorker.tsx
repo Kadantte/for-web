@@ -1,6 +1,6 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 
-import { useLingui } from "@lingui-solid/solid/macro";
+import { useLingui } from "@lingui/solid/macro";
 import {
   ChannelEditSystemMessage,
   ChannelOwnershipChangeSystemMessage,
@@ -15,7 +15,7 @@ import {
 import { useNavigate, useSmartParams } from "@revolt/routing";
 import { useState } from "@revolt/state";
 
-import { useClient, useNotifications } from ".";
+import { useClient, useNotifications, useSound } from ".";
 
 /**
  * Process and display desktop notifications
@@ -26,6 +26,7 @@ export function NotificationsWorker() {
   const client = useClient();
   const navigate = useNavigate();
   const params = useSmartParams();
+  const sound = useSound();
 
   const { initNotifications } = useNotifications();
 
@@ -191,8 +192,6 @@ export function NotificationsWorker() {
       body = t`Sent ${message.attachments!.length} attachments`;
     }
 
-    // todo: play sound
-
     // Don't continue if we don't have notification permissions
     if (
       Notification.permission !== "granted" ||
@@ -200,7 +199,7 @@ export function NotificationsWorker() {
     )
       return;
 
-    console.info(`[notification] ${title} ${icon} ${body}`);
+    sound.playSound("message");
 
     const notification = new Notification(title!, {
       icon,

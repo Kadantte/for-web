@@ -1,5 +1,26 @@
-import { useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui/solid/macro";
+import { createMemo, Match, Switch } from "solid-js";
 import { API } from "stoat.js";
+
+const RE_BREAK = /\s*\n\s*/g;
+
+function cleanError(
+  error: unknown,
+): { type?: never } | { message?: never } | string | undefined {
+  // Attempt to parse the incoming error as JSON if it is a string,
+  // as some errors (e.g on login) are sent to this function as a string,
+  // which then causes the error message to be unlocalised and unhelpful.
+  if (typeof error === "string") {
+    try {
+      return JSON.parse(error);
+    } catch {
+      // Ignore JSON parse errors
+      return error;
+    }
+  }
+
+  return error as { type?: never } | { message?: never } | undefined;
+}
 
 /**
  * Translate any error
@@ -7,33 +28,17 @@ import { API } from "stoat.js";
 export function useError() {
   const { t } = useLingui();
 
-  return (error: unknown) => {
-    // TODO: HTTP errors
+  return (error: unknown, context?: string) => {
+    error = cleanError(error);
 
-    // Attempt to parse the incoming error as JSON if it is a string,
-    // as some errors (e.g on login) are sent to this function as a string,
-    // which then causes the error message to be unlocalised and unhelpful.
-    if (typeof error === "string") {
-      try {
-        error = JSON.parse(error);
-      } catch {
-        // Ignore JSON parse errors
-      }
-    }
+    // TODO: HTTP errors
 
     // handle Revolt API errors
     if (
       (error as { type?: never } | undefined)?.type &&
       typeof (error as { type: never }).type === "string"
     ) {
-      const err = error as
-        | API.Error
-        | Exclude<
-            API.Authifier_Error,
-            | { type: "UnknownUser" }
-            | { type: "DatabaseError" }
-            | { type: "InternalError" }
-          >;
+      const err = error as API.Error;
 
       switch (err.type) {
         case "AlreadyFriends":
@@ -49,6 +54,8 @@ export function useError() {
         case "AlreadySentRequest":
           return t`You've already sent a request to this user.`;
         case "Banned":
+          if (context === "discover")
+            return t`You may not submit this item to discover.`;
           return t`You are banned from this server.`;
         case "Blocked":
           return t`You have this user blocked.`;
@@ -127,6 +134,25 @@ export function useError() {
           return t`This account is not activated! Please check your account's inbox and try again.`;
         case "TotpAlreadyEnabled":
           return t`Multi-factor authentication is already enabled for this account.`;
+        case "ContactSupport":
+          switch (err.locale) {
+            case "discover.bot_removal_approved":
+              return t`The bot is already on discover, the user must contact support to have it removed`;
+            case "discover.bot_removal_removed":
+              return t`The bot has been removed from discover by moderators, the user must contact support.`;
+            case "discover.server_removal_approved":
+              return t`The server is already on discover, the user must contact support to have it removed.`;
+            case "discover.server_removal_removed":
+              return t`The server has been removed from discover by moderators, the user must contact support.`;
+            case "discover.declined_apply_again":
+              return t`The Discover request was declined. Declined requests cannot be removed, but the user may submit again.`;
+            case "discover.cannot_auto_remove":
+              return t`The Discover request is approved or the item has been removed from discover. In either case, the user must contact support.`;
+            case "discover.removed_cannot_apply":
+              return t`The item was removed by moderators, and as such future applications are prohibited. Contact support for more information.`;
+            default:
+              return t`Your request failed. Please contact support.`;
+          }
 
         // unreachable errors (in theory)
         case "FileTooLarge":
@@ -170,10 +196,61 @@ export function useError() {
     ) {
       const message = (error as { message: string }).message.trim();
       if (message) return message;
+    } else if (typeof error === "string") {
+      //Strip HTML from string
+      const p = document.createElement("html");
+      p.innerHTML = error;
+      p.querySelector("head")?.remove();
+      p.querySelector("[role=contentinfo]")?.remove();
+      error = p.textContent!.trim().replace(RE_BREAK, ". ");
     }
 
     return t`Something went wrong! ${error}`;
     // revert to `Try again later.` later
     // need to capture envelopes properly
   };
+}
+
+type TranslatedErrorProps = {
+  error: unknown;
+};
+
+export function TranslatedError(props: TranslatedErrorProps) {
+  const err = useError();
+
+  const errorString = createMemo(() => {
+    const clean = cleanError(props.error);
+
+    if (
+      (clean as { type?: never } | undefined)?.type &&
+      typeof (clean as { type: never }).type === "string"
+    ) {
+      const err = clean as API.Error;
+
+      return err;
+    }
+
+    return err(props.error);
+  });
+
+  return (
+    <Switch fallback={errorString() as string}>
+      <Match when={typeof errorString() !== "string"}>
+        <Switch fallback={err(props.error)}>
+          <Match when={(errorString() as API.Error).type === "BlockedByShield"}>
+            <Trans>
+              This sign up is marked as spam. Please see{" "}
+              <a
+                href="https://support.stoat.chat/kb/safety/blocked-for-spam"
+                target="_blank"
+                rel="noreferrer"
+              >
+                this support article.
+              </a>
+            </Trans>
+          </Match>
+        </Switch>
+      </Match>
+    </Switch>
+  );
 }

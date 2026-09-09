@@ -5,7 +5,6 @@ import {
   Switch,
   createContext,
   createEffect,
-  createMemo,
   createSignal,
   onCleanup,
   onMount,
@@ -13,11 +12,14 @@ import {
 } from "solid-js";
 import { Portal } from "solid-js/web";
 
-import { makeResizeObserver } from "@solid-primitives/resize-observer";
+import { createResizeObserver } from "@solid-primitives/resize-observer";
 import { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useVoice } from "@revolt/rtc";
+import { VoiceLayout } from "@revolt/rtc/state";
+import { useState } from "@revolt/state";
+import { SlideState } from "@revolt/ui/components/navigation/SlideDrawer";
 
 import { VoiceCallCardActiveRoom } from "./VoiceCallCardActiveRoom";
 import { VoiceCallCardPiP } from "./VoiceCallCardPiP";
@@ -29,6 +31,8 @@ type FloatType = "tl" | "tr" | "bl" | "br";
 type Info = {
   channel: Channel;
   pos: DOMRect;
+  parentRect: DOMRect;
+  drawer?: SlideState;
 };
 
 const PAD = 16,
@@ -40,6 +44,7 @@ const callCardContext = createContext<(info?: Info) => void>();
 /** Voice call card context */
 export function VoiceCallCardContext(props: { children: JSX.Element }) {
   const voice = useVoice();
+  const inCall = () => !!voice.channel();
 
   const [mode, setMode] = createSignal<Mode>();
   const [info, setInfo] = createSignal<Info>();
@@ -96,26 +101,42 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
     events = null;
   }
 
-  const channel = createMemo(() => {
+  createEffect(() => {
     const inf = info();
-
     if (!ref) return;
     const sty = ref.style;
+    resetEvents();
 
     //Set mode based on state
-    if (inf?.pos) {
+    if (voice.layout() === "fullscreen") {
+      sty.transform = ``;
+      sty.width = `100%`;
+      sty.height = "";
+      setMode();
+    } else if (
+      voice.layout() === "expanded" &&
+      inf?.parentRect &&
+      (!inf.drawer || inf.drawer === SlideState.SHOWN)
+    ) {
+      sty.transform = `translate(${inf.parentRect.x}px, ${inf.parentRect.y}px)`;
+      sty.width = `${inf.parentRect.width}px`;
+      sty.height = `${inf.parentRect.height}px`;
+      setMode();
+    } else if (inf?.pos && (!inf.drawer || inf.drawer === SlideState.SHOWN)) {
       sty.transform = `translate(${inf.pos.x}px, ${inf.pos.y}px)`;
       sty.width = `${inf.pos.width}px`;
+      sty.height = voice.layout() === "collapsed" ? "56px" : "";
       setMode();
-    } else if (!voice.channel()) {
+    } else if (!inCall()) {
       const y = inf?.pos.y ?? ref.getBoundingClientRect().y;
       sty.transform = `translate(${innerWidth + 50}px, ${y}px)`;
+      sty.width = "";
+      sty.height = "";
       setMode();
     } else if (!mode()) setFloat("tr");
-
-    resetEvents();
-    return inf?.channel;
   });
+
+  const channel = () => info()?.channel;
 
   function setFloat(float: FloatType) {
     const sty = ref!.style,
@@ -123,22 +144,58 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
       y = float[0] === "t" ? PAD_Y : `calc(100vh - var(--flt-h) - ${PAD_Y})`;
     sty.transform = `translate(${x}, ${y})`;
     sty.width = "";
+    sty.height = "";
     setMode("floating");
   }
 
   onCleanup(resetEvents);
 
+  onMount(() => {
+    document
+      .getElementById("floating")
+      ?.addEventListener("fullscreenchange", () => {
+        if (!document.fullscreenElement) voice.resetLayout();
+      });
+  });
+
+  createEffect(() => {
+    if (voice.layout() === "fullscreen" && inCall()) {
+      if (
+        !document
+          .getElementById("floating")
+          ?.isSameNode(document.fullscreenElement)
+      ) {
+        if (document.fullscreenElement) {
+          document.exitFullscreen();
+        }
+        document.getElementById("floating")?.requestFullscreen();
+      }
+    } else if (document.fullscreenElement) {
+      document.exitFullscreen();
+    }
+  });
+
   return (
     <callCardContext.Provider value={setInfo}>
       {props.children}
-      <Portal ref={document.getElementById("floating")! as HTMLDivElement}>
-        <Float ref={ref} mode={mode()} onPointerDown={mouseDown}>
+      <Portal mount={document.getElementById("floating")! as HTMLDivElement}>
+        <Float
+          ref={ref}
+          mode={mode()}
+          onPointerDown={mouseDown}
+          fullscreen={voice.layout() === "fullscreen"}
+        >
           <Switch>
-            <Match when={mode()}>
+            <Match when={mode() && inCall()}>
               <VoiceCallCardPiP />
             </Match>
             <Match when={channel()}>
-              <VoiceCallCard channel={channel()!} />
+              <VoiceCallCard
+                channel={channel()!}
+                inCall={inCall()}
+                showCard={voice.showCard(channel()!)}
+                layout={voice.layout()}
+              />
             </Match>
           </Switch>
         </Float>
@@ -164,6 +221,14 @@ const Float = styled("div", {
         transition: "none",
       },
     },
+    fullscreen: {
+      true: {
+        zIndex: 100,
+        height: "100vh",
+        top: 0,
+        // Width is set by floating logic in effect above
+      },
+    },
   },
   compoundVariants: [
     {
@@ -181,6 +246,7 @@ const Float = styled("div", {
 /** 'Marker' to send position information for mounting the floating call card */
 export function VoiceChannelCallCardMount(props: { channel: Channel }) {
   const voice = useVoice();
+  const state = useState();
   const setInfo = useContext(callCardContext)!;
   let ref: HTMLDivElement | undefined;
 
@@ -191,6 +257,8 @@ export function VoiceChannelCallCardMount(props: { channel: Channel }) {
         ? {
             channel: props.channel,
             pos: ref!.getBoundingClientRect(),
+            parentRect: ref!.parentElement!.getBoundingClientRect(),
+            drawer: state.appDrawer()?.state,
           }
         : undefined,
     );
@@ -198,14 +266,13 @@ export function VoiceChannelCallCardMount(props: { channel: Channel }) {
 
   createEffect(updateInfo);
 
-  //Observe resize of parent
-  let obs: ReturnType<typeof makeResizeObserver>;
   onMount(() => {
-    obs = makeResizeObserver(updateInfo);
-    obs.observe(ref!.parentElement!);
+    const target = ref?.parentElement;
+    if (!target) return;
+
+    createResizeObserver(target, updateInfo);
   });
   onCleanup(() => {
-    obs.unobserve(ref!.parentElement!);
     setInfo();
   });
 
@@ -215,39 +282,18 @@ export function VoiceChannelCallCardMount(props: { channel: Channel }) {
 /**
  * Call card
  */
-function VoiceCallCard(props: { channel: Channel }) {
-  const voice = useVoice();
-  const inCall = () => !!voice.channel();
-
-  let viewRef: HTMLDivElement | undefined;
-
-  onMount(() => {
-    viewRef?.addEventListener("fullscreenchange", () => {
-      if (!document.fullscreenElement) {
-        voice.toggleFullscreen(false);
-      }
-    });
-  });
-
-  createEffect(() => {
-    if (voice.fullscreen() && inCall()) {
-      if (!viewRef?.isSameNode(document.fullscreenElement)) {
-        if (document.fullscreenElement) {
-          document.exitFullscreen();
-        }
-        viewRef?.requestFullscreen();
-      }
-    } else if (document.fullscreenElement) {
-      document.exitFullscreen();
-    }
-  });
-
+function VoiceCallCard(props: {
+  channel: Channel;
+  inCall: boolean;
+  showCard: boolean;
+  layout: VoiceLayout;
+}) {
   return (
-    <Show when={voice.showCard(props.channel)}>
-      <Base>
-        <Card ref={viewRef} active={inCall()}>
+    <Show when={props.showCard}>
+      <Base layout={props.layout as never}>
+        <Card active={props.inCall} layout={props.layout}>
           <Show
-            when={inCall()}
+            when={props.inCall}
             fallback={<VoiceCallCardPreview channel={props.channel} />}
           >
             <VoiceCallCardActiveRoom />
@@ -265,14 +311,31 @@ const Base = styled("div", {
     padding: "var(--gap-md)",
 
     width: "100%",
+    height: "100%",
     position: "absolute",
 
     zIndex: 2,
     userSelect: "none",
+    pointerEvents: "none",
 
     display: "flex",
     alignItems: "center",
     flexDirection: "column",
+    transition: "all var(--transitions-medium)",
+  },
+  variants: {
+    layout: {
+      fullscreen: {
+        top: 0,
+        height: "100%",
+        padding: 0,
+      },
+      expanded: {
+        top: 0,
+        height: "100%",
+        padding: 0,
+      },
+    },
   },
 });
 
@@ -291,7 +354,7 @@ const Card = styled("div", {
     active: {
       true: {
         width: "100%",
-        height: "40vh",
+        height: "100%",
       },
       false: {
         width: "360px",
@@ -299,8 +362,16 @@ const Card = styled("div", {
         cursor: "pointer",
       },
     },
-  },
-  defaultVariants: {
-    active: false,
+    layout: {
+      fullscreen: {
+        borderRadius: 0,
+      },
+      expanded: {
+        borderRadius: "var(--borderRadius-xl)",
+      },
+      collapsed: {
+        background: "none",
+      },
+    },
   },
 });

@@ -1,4 +1,4 @@
-import { Show, createRenderEffect, on, splitProps } from "solid-js";
+import { Show, createRenderEffect, mergeProps, on, splitProps } from "solid-js";
 import { JSX } from "solid-js/jsx-runtime";
 
 import { AriaButtonProps, createButton } from "@solid-aria/button";
@@ -118,7 +118,16 @@ export function Button(props: Props) {
     ),
   );
 
-  const { buttonProps } = createButton(rest, () => ref);
+  const [btn, noBtnRest] = splitProps(rest, ["onPress"]);
+
+  //Emulate delay of native onClick
+  // See issue https://github.com/solidjs-community/solid-aria/issues/84
+  // Delay must be at least 32ms for Safari
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const onPress = (e: any) => setTimeout(() => btn.onPress?.(e), 32),
+    btnRest = mergeProps(noBtnRest, { onPress, preventFocusOnPress: true });
+
+  const { buttonProps } = createButton(btnRest, () => ref);
   return (
     <button
       {...passthrough}
@@ -387,8 +396,7 @@ const button = cva({
       css: {
         "--color":
           "color-mix(in srgb, 38% var(--md-sys-color-on-surface), transparent)",
-        background:
-          "color-mix(in srgb, 10% var(--md-sys-color-on-surface), transparent)",
+        background: "transparent",
       },
     },
 

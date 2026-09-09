@@ -1,7 +1,7 @@
 import { createFormControl, createFormGroup } from "solid-forms";
 import { For, Match, Switch } from "solid-js";
 
-import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui/solid/macro";
 import { API, Message as MessageI, Server, User } from "stoat.js";
 import { cva } from "styled-system/css";
 
@@ -11,7 +11,6 @@ import {
   Column,
   Dialog,
   DialogProps,
-  FloatingSelect,
   Form2,
   Initials,
   MenuItem,
@@ -181,25 +180,17 @@ export function ReportContentModal(
             )}
           </div>
 
-          <FloatingSelect
+          <Form2.Select
             label={t`Reason for report`}
-            required
-            value={group.controls.category.value}
-            onChange={(
-              e: Event & { currentTarget: HTMLElement; target: Element },
-            ) =>
-              group.controls.category.setValue(
-                e.currentTarget.getAttribute("value") || "",
-              )
-            }
+            control={group.controls.category}
           >
-            <MenuItem value="">
+            <MenuItem>
               <Trans>Please select a reason</Trans>
             </MenuItem>
             <For each={reasons}>
               {(value) => <MenuItem value={value}>{strings[value]}</MenuItem>}
             </For>
-          </FloatingSelect>
+          </Form2.Select>
 
           {/* TODO: use TextEditor? */}
           <Form2.TextField

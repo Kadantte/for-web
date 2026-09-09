@@ -1,21 +1,21 @@
 import {
-  For,
-  Match,
-  Show,
-  Switch,
   createEffect,
   createMemo,
   createSignal,
+  For,
   on,
   onCleanup,
+  Show,
 } from "solid-js";
 
-import { useLingui } from "@lingui-solid/solid/macro";
+import { useLingui } from "@lingui/solid/macro";
 import { Channel } from "stoat.js";
 
 import { useClient } from "@revolt/client";
-import { CONFIGURATION, debounce } from "@revolt/common";
-import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
+import { debounce } from "@revolt/common";
+import { createIsTimedOut } from "@revolt/common/lib/createIsTimedOut";
+import { useInstance } from "@revolt/instance";
+import { createKeybind, Keybind, KeybindAction } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
@@ -23,10 +23,10 @@ import {
   FileCarousel,
   FileDropAnywhereCollector,
   FilePasteCollector,
+  humanFileSize,
   IconButton,
   MessageBox,
   MessageReplyPreview,
-  humanFileSize,
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
@@ -50,7 +50,12 @@ export function MessageComposition(props: Props) {
   const state = useState();
   const { t } = useLingui();
   const client = useClient();
+  const { limits } = useInstance();
   const { openModal } = useModals();
+
+  const isTimedOut = createIsTimedOut(
+    () => props.channel.server?.member?.timeout,
+  );
 
   createKeybind(KeybindAction.CHAT_JUMP_END, () =>
     setNodeReplacement(["_focus"]),
@@ -69,17 +74,17 @@ export function MessageComposition(props: Props) {
   }
 
   const messageLength = () => draft().content?.length ?? 0;
-
-  const maxMessageLength = () => {
-    const cl = client();
-    return cl.configured()
-      ? (cl.configuration?.features.limits.default.message_length ?? 2000)
-      : 2000;
-  };
-
+  const maxMessageLength = () => limits().message_length;
   const isAlmostTooLong = () => messageLength() > maxMessageLength() - 200;
-
   const wayTooLong = () => messageLength() > maxMessageLength() + 9999;
+
+  // Can the user upload files here?
+  const canUploadFiles = createMemo(() => {
+    return (
+      props.channel.havePermission("SendMessage") &&
+      props.channel.havePermission("UploadFiles")
+    );
+  });
 
   // Whether the send button should be active/clickable
   const canSend = createMemo(() => {
@@ -88,8 +93,13 @@ export function MessageComposition(props: Props) {
 
     const tooLong = messageLength() > maxMessageLength();
 
+    const isSlowmode = props.channel.userSlowmode();
+
     return (
-      !tooLong && (draftContent.trim().length > 0 || draftFiles.length > 0)
+      !tooLong &&
+      (draftContent.trim().length > 0 || draftFiles.length > 0) &&
+      !isSlowmode &&
+      !isTimedOut()
     );
   });
 
@@ -179,6 +189,8 @@ export function MessageComposition(props: Props) {
   async function sendMessage(useContent?: unknown) {
     if (!canSend() && typeof useContent !== "string") {
       return;
+    } else if (props.channel.userSlowmode()) {
+      return;
     }
     stopTyping();
     props.onMessageSend?.();
@@ -215,13 +227,11 @@ export function MessageComposition(props: Props) {
    * @param files List of files
    */
   function onFiles(files: File[]) {
+    if (!canUploadFiles()) return;
+
     const rejectedFiles: File[] = [];
     const validFiles: File[] = [];
-
-    const maxSize = client().configured()
-      ? (client().configuration?.features.limits.default.file_upload_size_limits
-          .attachments ?? CONFIGURATION.MAX_FILE_SIZE)
-      : CONFIGURATION.MAX_FILE_SIZE;
+    const maxSize = limits().file_upload_size_limits.attachments;
 
     for (const file of files) {
       if (file.size > maxSize) {
@@ -267,6 +277,8 @@ export function MessageComposition(props: Props) {
    * Add a file to the message
    */
   function addFile() {
+    if (!canUploadFiles()) return;
+
     const input = document.createElement("input");
     input.accept = "*";
     input.type = "file";
@@ -353,15 +365,16 @@ export function MessageComposition(props: Props) {
         content={draft()?.content ?? ""}
         setContent={setContent}
         actionsStart={
-          <Switch fallback={<MessageBox.InlineIcon size="short" />}>
-            <Match when={props.channel.havePermission("UploadFiles")}>
-              <MessageBox.InlineIcon size="wide">
-                <IconButton onPress={addFile}>
-                  <Symbol>add</Symbol>
-                </IconButton>
-              </MessageBox.InlineIcon>
-            </Match>
-          </Switch>
+          <Show
+            when={props.channel.havePermission("UploadFiles")}
+            fallback={<MessageBox.InlineIcon size="short" />}
+          >
+            <MessageBox.InlineIcon>
+              <IconButton onPress={addFile}>
+                <Symbol>add</Symbol>
+              </IconButton>
+            </MessageBox.InlineIcon>
+          </Show>
         }
         actionsEnd={
           <MessageBox.ActionContainer column>
@@ -382,17 +395,18 @@ export function MessageComposition(props: Props) {
               >
                 {(triggerProps) => (
                   <>
-                    <MessageBox.InlineIcon size="normal">
-                      <IconButton onPress={triggerProps.onClickGif}>
-                        <Symbol>gif</Symbol>
-                      </IconButton>
-                    </MessageBox.InlineIcon>
-                    <MessageBox.InlineIcon size="normal">
+                    <Show when={!canSend()}>
+                      <MessageBox.InlineIcon>
+                        <IconButton onPress={triggerProps.onClickGif}>
+                          <Symbol>gif</Symbol>
+                        </IconButton>
+                      </MessageBox.InlineIcon>
+                    </Show>
+                    <MessageBox.InlineIcon>
                       <IconButton onPress={triggerProps.onClickEmoji}>
-                        <Symbol>emoticon</Symbol>
+                        <Symbol>mood</Symbol>
                       </IconButton>
                     </MessageBox.InlineIcon>
-
                     <div ref={triggerProps.ref} />
                   </>
                 )}
@@ -407,7 +421,10 @@ export function MessageComposition(props: Props) {
               ? t`Message ${props.channel.recipient?.username}`
               : t`Message ${props.channel.name}`
         }
-        sendingAllowed={props.channel.havePermission("SendMessage")}
+        sendingAllowed={
+          props.channel.havePermission("SendMessage") && !isTimedOut()
+        }
+        timeoutActive={isTimedOut()}
         autoCompleteSearchSpace={searchSpace}
         updateDraftSelection={(start, end) =>
           state.draft.setSelection(props.channel.id, start, end)
@@ -430,8 +447,10 @@ export function MessageComposition(props: Props) {
           </Show>
         }
       />
-      <FilePasteCollector onFiles={onFiles} />
-      <FileDropAnywhereCollector onFiles={onFiles} />
+      <Show when={canUploadFiles()}>
+        <FilePasteCollector onFiles={onFiles} />
+        <FileDropAnywhereCollector onFiles={onFiles} />
+      </Show>
     </>
   );
 }
